@@ -142,8 +142,8 @@ parser.add_argument('--discriminatore_loss_weight', default="1", type=float, hel
 parser.add_argument('--response_distill_loss', action='store_true')
 parser.add_argument('--feat_distill', action='store_true')
                     
-# -
 
+# +
 def main(args):
     set_seed(args.seed)
     device = 'cuda'
@@ -217,8 +217,9 @@ def main(args):
         g_steps_left = args.g_steps
         epoch += 1
 
-        pbar = tqdm(train_loader)
-        for batch in pbar:
+#         pbar = tqdm(train_loader)
+#         for batch in pbar:
+        for batch in train_loader:
 
             if d_steps_left > 0:
                 step_type = 'd'
@@ -237,13 +238,13 @@ def main(args):
             if d_steps_left > 0 or g_steps_left > 0:
                 continue
 
-            pbar.set_postfix({
-                "G_l2" : losses_g['G_l2_loss_rel'],
-                "G_adv" : losses_g['G_discriminator_loss'],
-                "G_distill" : losses_g['g_distill_loss'],
-                "G_feat" : losses_g['loss_feat'],
-                "D" : losses_d['D_total_loss']
-            })
+#             pbar.set_postfix({
+#                 "G_l2" : losses_g['G_l2_loss_rel'],
+#                 "G_adv" : losses_g['G_discriminator_loss'],
+#                 "G_distill" : losses_g['g_distill_loss'],
+#                 "G_feat" : losses_g['loss_feat'],
+#                 "D" : losses_d['D_total_loss']
+#             })
 
             # Maybe save a checkpoint
             if t > 0 and t % args.checkpoint_every == 0:
@@ -315,6 +316,8 @@ def main(args):
         print('  [train] {}: {:.3f}'.format(k, v))
         checkpoint['metrics_train'][k].append(v)
 
+
+# -
 
 def get_lrp(generator_T, obs_traj, obs_traj_rel, pred_traj_gt_rel, seq_start_end, alpha, negative):
     generator_T.train()
