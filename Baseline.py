@@ -141,7 +141,7 @@ parser.add_argument('--discriminatore_loss_weight', default="1", type=float, hel
 
 parser.add_argument('--response_distill_loss', action='store_true')
 parser.add_argument('--feat_distill', action='store_true')
-                    
+
 
 # +
 def main(args):
@@ -219,8 +219,7 @@ def main(args):
 
 #         pbar = tqdm(train_loader)
 #         for batch in pbar:
-        for batch in train_loader:
-
+        for batch_idx, batch in enumerate(train_loader):
             if d_steps_left > 0:
                 step_type = 'd'
                 losses_d = discriminator_step(args, batch, generator_S,
@@ -286,10 +285,16 @@ def main(args):
 
                 checkpoint['d_state'] = discriminator_S.state_dict()
                 checkpoint['d_optim_state'] = optimizer_d.state_dict()
-                os.makedirs(args.checkpoint_save_path, exist_ok=True)
                 
-                checkpoint_path = os.path.join(
-                    args.output_dir, f'{args.checkpoint_save_path}/{args.dataset_name}_{args.pred_len}_model.pt')
+                if feat_distill_loss_weight > 0:
+                    os.makedirs(args.checkpoint_save_path, exist_ok=True)
+                    checkpoint_path = os.path.join(
+                        args.output_dir, f'{args.checkpoint_save_path}/{args.dataset_name}_{args.pred_len}_model.pt')
+                else:
+                    os.makedirs(args.checkpoint_save_path + "_feat", exist_ok=True)
+                    checkpoint_path = os.path.join(
+                        args.output_dir, f'{args.checkpoint_save_path}_feat/{args.dataset_name}_{args.pred_len}_model.pt')
+                    
                 print('Saving checkpoint to {}'.format(checkpoint_path))
 
                 torch.save(checkpoint, checkpoint_path)
@@ -319,10 +324,13 @@ def main(args):
 
 # -
 
-def get_lrp(generator_T, obs_traj, obs_traj_rel, pred_traj_gt_rel, seq_start_end, alpha, negative):
+def get_lrp(generator_T, obs_traj, obs_traj_rel, pred_traj_gt_rel, seq_start_end, args):
     generator_T.train()
     
+    obs_traj.retain_grad = True
     obs_traj.requires_grad = True
+    
+    obs_traj_rel.retain_grad = True
     obs_traj_rel.requires_grad = True
     
     pred = generator_T(obs_traj, obs_traj_rel, seq_start_end)
@@ -331,8 +339,12 @@ def get_lrp(generator_T, obs_traj, obs_traj_rel, pred_traj_gt_rel, seq_start_end
     loss.backward()
 
     #  ===================================================================
-    obs_traj_lrp = obs_traj - (obs_traj.grad * torch.abs(obs_traj) * alpha * negative)
-    obs_traj_rel_lrp = obs_traj_rel - (obs_traj_rel.grad * torch.abs(obs_traj_rel) * alpha * negative)
+    if args.pool:
+        obs_traj_lrp = obs_traj - (obs_traj.grad * torch.abs(obs_traj) * args.alpha * args.negative)
+    else:
+        obs_traj_lrp = obs_traj
+        
+    obs_traj_rel_lrp = obs_traj_rel - (obs_traj_rel.grad * torch.abs(obs_traj_rel) * args.alpha * args.negative)
 
     return obs_traj_lrp, obs_traj_rel_lrp
 
@@ -354,7 +366,7 @@ def generator_step(args, batch, generator_S, generator_T, discriminator, g_loss_
         generator_out_S, feat_S = generator_S(obs_traj, obs_traj_rel, seq_start_end, is_feat=True)
         
         if args.mode == 'lrp':
-            obs_traj_ref, obs_traj_rel_ref = get_lrp(generator_T, obs_traj, obs_traj_rel, pred_traj_gt_rel, seq_start_end, args.alpha, args.negative)
+            obs_traj_ref, obs_traj_rel_ref = get_lrp(generator_T, obs_traj, obs_traj_rel, pred_traj_gt_rel, seq_start_end, args)
         elif args.mode == 'random_noise':
             obs_traj_ref = obs_traj + (torch.randn_like(obs_traj) * args.traj_std)
             obs_traj_rel_ref = obs_traj_rel + (torch.randn_like(obs_traj_rel) * args.traj_rel_std)
@@ -545,33 +557,26 @@ def get_dtypes(args):
 
 
 
-# -
-
-if __name__ == '__main__':
-#     args = parser.parse_args()
-    os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-    
-    checkpoint = torch.load("./models/sgan-p-models/hotel_8_model.pt")
-    args = AttrDict(checkpoint['args'])
-    args.seed = 0
-    args.checkpoint_load_path = "./models/sgan-p-models/hotel_8_model.pt"
-    args.mode = 'lrp'
-    args.alpha = 390
-    args.l2_loss_distill_weight = 1
-    args.response_distill_loss_weight = 1
-    args.feat_distill_loss_weight = 1
-    args.discriminatore_loss_weight = 1
-    args.response_distill_loss = True
-    args.feat_distill = True
-    args.negative = 1
-    main(args)
 
 # +
-parser.add_argument('--l2_loss_distill_weight', default="1", type=float, help = "basic trajectory forecasting loss")
-parser.add_argument('--response_distill_loss_weight', default="1", type=float, help = "loss between teacher's output and sutdent's output")
-parser.add_argument('--feat_distill_loss_weight', default="1", type=float,  help = "loss between teacher's output and sutdent's feature")
-parser.add_argument('--discriminatore_loss_weight', default="1", type=float, help = "discriminator loss")
+if __name__ == '__main__':
+    args = parser.parse_args()
+    os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_num)
+    
+#     checkpoint = torch.load("./models/sgan-models/hotel_8_model.pt")
+#     args = AttrDict(checkpoint['args'])
+#     args.seed = 0
+#     args.checkpoint_load_path = "./models/sgan-models/hotel_8_model.pt"
+#     args.mode = 'lrp'
+#     args.alpha = 390
+#     args.l2_loss_distill_weight = 1
+#     args.response_distill_loss_weight = 1
+#     args.feat_distill_loss_weight = 1
+#     args.discriminatore_loss_weight = 1
+#     args.response_distill_loss = True
+#     args.feat_distill = True
+#     args.negative = 1
 
-parser.add_argument('--response_distill_loss', action='store_true')
-parser.add_argument('--feat_distill', action='store_true')
+    args.pool = ("sgan-models" not in args.checkpoint_load_path)
+    main(args)
