@@ -125,14 +125,14 @@ parser.add_argument('--gpu_num', default="0", type=str)
 
 parser.add_argument('--seed', default="0", type=int)
 parser.add_argument('--alpha', default="390", type=int, help='LRP weight')
-parser.add_argument('--negative', default="1", type=int, help='1 is positive LRP and -1 is negative LRP')
+# parser.add_argument('--negative', default="1", type=int, help='1 is positive LRP and -1 is negative LRP')
 
 parser.add_argument('--traj_std', default="0.0656", type=float, help='std for randomnoise')
 parser.add_argument('--traj_rel_std', default="0.0324", type=float, help='std for randomnoise')
 
 parser.add_argument('--checkpoint_load_path', required=True)
 parser.add_argument('--checkpoint_save_path', required=True)
-parser.add_argument('--mode', default=""'', type=str, choices=[ 'random_noise', 'lrp'], help = "lrp or random_noise")
+parser.add_argument('--mode', default=""'', type=str, choices=['random_noise', 'lrp', 'no_noise', 'negative_lrp'], help = "lrp or random_noise")
                     
 parser.add_argument('--l2_loss_distill_weight', default="1", type=float, help = "basic trajectory forecasting loss")
 parser.add_argument('--response_distill_loss_weight', default="1", type=float, help = "loss between teacher's output and sutdent's output")
@@ -286,7 +286,7 @@ def main(args):
                 checkpoint['d_state'] = discriminator_S.state_dict()
                 checkpoint['d_optim_state'] = optimizer_d.state_dict()
                 
-                if feat_distill_loss_weight > 0:
+                if args.feat_distill_loss_weight > 0:
                     os.makedirs(args.checkpoint_save_path, exist_ok=True)
                     checkpoint_path = os.path.join(
                         args.output_dir, f'{args.checkpoint_save_path}/{args.dataset_name}_{args.pred_len}_model.pt')
@@ -366,10 +366,17 @@ def generator_step(args, batch, generator_S, generator_T, discriminator, g_loss_
         generator_out_S, feat_S = generator_S(obs_traj, obs_traj_rel, seq_start_end, is_feat=True)
         
         if args.mode == 'lrp':
+            args.negative = 1
+            obs_traj_ref, obs_traj_rel_ref = get_lrp(generator_T, obs_traj, obs_traj_rel, pred_traj_gt_rel, seq_start_end, args)
+        elif args.mode == 'negative_lrp':
+            args.negative = -1
             obs_traj_ref, obs_traj_rel_ref = get_lrp(generator_T, obs_traj, obs_traj_rel, pred_traj_gt_rel, seq_start_end, args)
         elif args.mode == 'random_noise':
             obs_traj_ref = obs_traj + (torch.randn_like(obs_traj) * args.traj_std)
             obs_traj_rel_ref = obs_traj_rel + (torch.randn_like(obs_traj_rel) * args.traj_rel_std)
+        elif args.mode == 'no_noise':
+            obs_traj_ref = obs_traj.clone()
+            obs_traj_rel_ref = obs_traj_rel.clone()
         else:
             assert False, "args.mode is wrong !!!!"
 #             obs_traj_ref = obs_traj + (torch.randn_like(obs_traj) * 0.0656)
