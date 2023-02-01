@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import torch
 import torch.nn as nn
 
@@ -60,12 +61,10 @@ class Encoder(nn.Module):
         """
         # Encode observed Trajectory
         batch = obs_traj.size(1)
-        obs_traj_embedding = self.spatial_embedding(obs_traj.reshape(-1, 2))
-        obs_traj_embedding = obs_traj_embedding.view(
-            -1, batch, self.embedding_dim
-        )
-        state_tuple = self.init_hidden(batch)
-        output, state = self.encoder(obs_traj_embedding, state_tuple)
+        obs_traj_embedding = self.spatial_embedding(obs_traj.reshape(-1, 2))  # linear
+        obs_traj_embedding = obs_traj_embedding.view( -1, batch, self.embedding_dim)  # reshape
+        state_tuple = self.init_hidden(batch)   # torch.zeros 2개
+        output, state = self.encoder(obs_traj_embedding, state_tuple)  # LSTM
         final_h = state[0]
         return final_h
 
@@ -505,7 +504,7 @@ class TrajectoryGenerator(nn.Module):
         """
         batch = obs_traj_rel.size(1)
         # Encode seq
-        final_encoder_h = self.encoder(obs_traj_rel)
+        final_encoder_h = self.encoder(obs_traj_rel)  #  FC 후 LSTM. agent 별로독립적으로 함
         # Pool States
         if self.pooling_type:
             end_pos = obs_traj[-1, :, :]
@@ -599,7 +598,8 @@ class TrajectoryDiscriminator(nn.Module):
         Output:
         - scores: Tensor of shape (batch,) with real/fake scores
         """
-        final_h = self.encoder(traj_rel)
+        final_h = self.encoder(traj_rel) # 독립적으로 encoding. 그냥 fc layer 하나에 LSTM
+        
         # Note: In case of 'global' option we are using start_pos as opposed to
         # end_pos. The intution being that hidden state has the whole
         # trajectory and relative postion at the start when combined with

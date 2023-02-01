@@ -11,7 +11,6 @@ import sys
 import gc
 import os
 
-
 import torch.backends.cudnn as cudnn
 from attrdict import AttrDict
 import torch.optim as optim
@@ -29,14 +28,11 @@ from sgan.data.loader import data_loader
 
 import train
 
-
 # +
 # checkpoint = torch.load("models/sgan-models/zara1_8_model.pt")
 
 # for k in sorted(checkpoint['args']):
 #     print(k,"\t",checkpoint['args'][k])
-
-# -
 
 def set_seed(seed=0):
     torch.manual_seed(seed)
@@ -48,13 +44,6 @@ def set_seed(seed=0):
     random.seed(seed)
     torch.backends.cudnn.benchmark = True
 
-
-# +
-# import torch
-# checkpoint_T = torch.load("models/sgan-p-models/eth_8_model.pt")
-# checkpoint_T['args']
-
-# +
 parser = argparse.ArgumentParser()
 FORMAT = '[%(levelname)s: %(filename)s: %(lineno)4d]: %(message)s'
 logging.basicConfig(level=logging.INFO, format=FORMAT, stream=sys.stdout)
@@ -137,7 +126,7 @@ parser.add_argument('--traj_rel_std', default="0.0324", type=float, help='std fo
 
 parser.add_argument('--checkpoint_load_path', required=True)
 parser.add_argument('--checkpoint_save_path', required=True)
-parser.add_argument('--mode', default=""'', type=str, choices=['random_noise', 'lrp', 'no_noise', 'negative_lrp'], help = "lrp or random_noise")
+parser.add_argument('--noise_mode', default=""'', type=str, choices=['random_noise', 'lrp', 'no_noise', 'negative_lrp'], help = "lrp or random_noise")
                     
 parser.add_argument('--l2_loss_distill_weight', default="1", type=float, help = "basic trajectory forecasting loss")
 parser.add_argument('--response_distill_loss_weight', default="1", type=float, help = "loss between teacher's output and sutdent's output")
@@ -146,6 +135,7 @@ parser.add_argument('--discriminatore_loss_weight', default="1", type=float, hel
 
 parser.add_argument('--response_distill_loss', action='store_true')
 parser.add_argument('--feat_distill', action='store_true')
+parser.add_argument('--self_distill', action='store_true')
 
 
 # +
@@ -153,13 +143,19 @@ def main(args):
     set_seed(args.seed)
     device = 'cuda'
     
-    checkpoint_T = torch.load(args.checkpoint_load_path)
     args.output_dir = "./"
     long_dtype, float_dtype = get_dtypes(args)
 
-    generator_T = get_generator(args)
-    generator_T.load_state_dict(checkpoint_T['g_state'])
-    generator_T = generator_T.to(device)
+    if args.self_distill:
+        print("Use Self Distillation")
+        generator_T = None
+
+    else:
+        generator_T = get_generator(args)
+        checkpoint_T = torch.load(args.checkpoint_load_path)
+        generator_T.load_state_dict(checkpoint_T['g_state'])
+        generator_T = generator_T.to(device)
+        generator_T.train()
 
     generator_S = get_generator(args)
     generator_S.apply(init_weights)
@@ -171,7 +167,6 @@ def main(args):
     discriminator_S.type(float_dtype).train()
     discriminator_S = discriminator_S.to(device)
     
-    generator_T.train()
     generator_S.train()
     discriminator_S.train()
 
@@ -219,7 +214,7 @@ def main(args):
     epoch = 0
     time_consume = time.time()
     while t < args.num_iterations:
-        print(f"{args.mode}\t{args.dataset_name} \t : {t} / {args.num_iterations}\t time_consume : {int(time.time()-time_consume)}")
+        print(f"{args.noise_mode}\t{args.dataset_name} \t : {t} / {args.num_iterations}\t time_consume : {int(time.time()-time_consume)}")
         time_consume = time.time()
         gc.collect()
         d_steps_left = args.d_steps
@@ -370,56 +365,51 @@ def generator_step(args, batch, generator_S, generator_T, discriminator, g_loss_
     g_l2_loss_rel = []
     g_distill_loss = []
     
-    
     loss_mask = loss_mask[:, args.obs_len:]
 
-    
     # Metohd 1 : ground truth하고 가장 가까운 teacher를 이용하자    -->    (ground truth만 쓰는거 이상의 효율이 나올 수 없다. or 분산이 너무 작다.)
     # Method2 : teacher를 그냥 한번만 이용하자(teacher는 한번 student는 k번) .
     # Method3: 분포를 똑같이하자(ex : teacher의 k개의 output의 분산과 평균이 student의 k개의 output 분산과 평균과 같아야 한다.).
     # Method4 : 처음에 teacher 한번, 이거에 맞춰 student 20번
-            
+    if args.self_distill:
+        generator_T = generator_S
+
     for idx_k in range(args.best_k):
         generator_out_S, feat_S = generator_S(obs_traj, obs_traj_rel, seq_start_end, is_feat=True)
-        
-        with torch.no_grad
-            out2, feat2 = generator_S(refined data)  # 보정해준 output(단점: ground truth와 크게 다를게 있나?)
-        
-        loss = (generator_out_S - out2)
-        
+
         # distillation
         if idx_k == 0:
-            if args.mode == 'lrp':
+            if args.noise_mode == 'lrp':
                 args.negative = 1
                 obs_traj_ref, obs_traj_rel_ref = get_lrp(generator_T, obs_traj, obs_traj_rel, pred_traj_gt_rel, seq_start_end, args)
-            elif args.mode == 'negative_lrp':
+            elif args.noise_mode == 'negative_lrp':
                 args.negative = -1
                 obs_traj_ref, obs_traj_rel_ref = get_lrp(generator_T, obs_traj, obs_traj_rel, pred_traj_gt_rel, seq_start_end, args)
-            elif args.mode == 'random_noise':
+            elif args.noise_mode == 'random_noise':
                 obs_traj_ref = obs_traj + (torch.randn_like(obs_traj) * args.traj_std)
                 obs_traj_rel_ref = obs_traj_rel + (torch.randn_like(obs_traj_rel) * args.traj_rel_std)
-            elif args.mode == 'no_noise':
+            elif args.noise_mode == 'no_noise':
                 obs_traj_ref = obs_traj.clone()
                 obs_traj_rel_ref = obs_traj_rel.clone()
             else:
-                assert False, "args.mode is wrong !!!!"
-            
+                assert False, "args.noise_mode is wrong !!!!"
+
             generator_out_T, feat_T = generator_T(obs_traj_ref, obs_traj_rel_ref, seq_start_end, is_feat=True)
-#         generator_out_S2, feat_S2 = generator_S(obs_traj_ref, obs_traj_rel_ref, seq_start_end, is_feat=True)
 
         pred_traj_fake_rel_S = generator_out_S
         pred_traj_fake_rel_T = generator_out_T
 
         pred_traj_fake_S = relative_to_abs(pred_traj_fake_rel_S, obs_traj[-1])
-        pred_traj_fake_T = relative_to_abs(pred_traj_fake_rel_T, obs_traj[-1])
 
         if args.l2_loss_weight > 0:
+            # gt와의 loss
             g_l2_loss_rel.append(args.l2_loss_weight * l2_loss(
                 pred_traj_fake_rel_S,
                 pred_traj_gt_rel,
                 loss_mask,
                 mode='raw'))
-            
+
+            # distillation의 response loss
             if args.response_distill_loss:
                 g_distill_loss.append(args.l2_loss_distill_weight * l2_loss(
                     pred_traj_fake_rel_S,
@@ -431,31 +421,34 @@ def generator_step(args, batch, generator_S, generator_T, discriminator, g_loss_
             
     g_l2_loss_sum_rel = torch.zeros(1).to(pred_traj_gt)
     g_distill_loss_sum_rel = torch.zeros(1).to(pred_traj_gt)
-    
+
     if args.l2_loss_weight > 0:
+        # gt와의 loss가 가장 작은애만 가져옴
         g_l2_loss_rel = torch.stack(g_l2_loss_rel, dim=1)
         for start, end in seq_start_end.data:
             _g_l2_loss_rel = g_l2_loss_rel[start:end]
             _g_l2_loss_rel = torch.sum(_g_l2_loss_rel, dim=0)
             _g_l2_loss_rel = torch.min(_g_l2_loss_rel) / torch.sum(loss_mask[start:end])
             g_l2_loss_sum_rel += _g_l2_loss_rel
-            
+
         losses['G_l2_loss_rel'] = g_l2_loss_sum_rel.item()
         loss += g_l2_loss_sum_rel
 
-        
+        # teacher의 output과의 loss가 가장 작은애만 가져옴
         g_distill_loss = torch.stack(g_distill_loss, dim=1)
         for start, end in seq_start_end.data:
             _g_distill_loss = g_l2_loss_rel[start:end]
             _g_distill_loss = torch.sum(_g_distill_loss, dim=0)
             _g_distill_loss = torch.min(_g_distill_loss) / torch.sum(loss_mask[start:end])
             g_distill_loss_sum_rel += _g_distill_loss
-            
+
         losses['g_distill_loss'] = g_distill_loss_sum_rel.item()
-        loss += g_distill_loss_sum_rel * args.response_distill_loss_weight
-        
+        loss += g_distill_loss_sum_rel
+
+        # feature distillation
         if args.feat_distill:
             loss_feat = 0
+
             for i in range(len(feat_S)):
                 if isinstance(feat_S[i], tuple):
                     for j in range(len(feat_S[i])):
@@ -467,7 +460,7 @@ def generator_step(args, batch, generator_S, generator_T, discriminator, g_loss_
             loss += loss_feat * args.feat_distill_loss_weight
         else:
             losses['loss_feat'] = 0
-        
+
     traj_fake = torch.cat([obs_traj, pred_traj_fake_S], dim=0)
     traj_fake_rel = torch.cat([obs_traj_rel, pred_traj_fake_rel_S], dim=0)
     
@@ -597,7 +590,7 @@ if __name__ == '__main__':
 #     args = AttrDict(checkpoint['args'])
 #     args.seed = 0
 #     args.checkpoint_load_path = "./models/sgan-models/hotel_8_model.pt"
-#     args.mode = 'lrp'
+#     args.noise_mode = 'lrp'
 #     args.alpha = 390
 #     args.l2_loss_distill_weight = 1
 #     args.response_distill_loss_weight = 1

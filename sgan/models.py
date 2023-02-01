@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import torch
 import torch.nn as nn
 
@@ -51,7 +52,7 @@ class Encoder(nn.Module):
             torch.zeros(self.num_layers, batch, self.h_dim).cuda()
         )
 
-    def forward(self, obs_traj):
+    def forward(self, obs_traj, is_feat = False):
         """
         Inputs:
         - obs_traj: Tensor of shape (obs_len, batch, 2)
@@ -60,14 +61,17 @@ class Encoder(nn.Module):
         """
         # Encode observed Trajectory
         batch = obs_traj.size(1)
-        obs_traj_embedding = self.spatial_embedding(obs_traj.reshape(-1, 2))
-        obs_traj_embedding = obs_traj_embedding.view(
-            -1, batch, self.embedding_dim
-        )
-        state_tuple = self.init_hidden(batch)
-        output, state = self.encoder(obs_traj_embedding, state_tuple)
+        obs_traj_embedding = self.spatial_embedding(obs_traj.reshape(-1, 2))  # linear
+        obs_traj_embedding = obs_traj_embedding.view( -1, batch, self.embedding_dim)  # reshape
+        state_tuple = self.init_hidden(batch)   # torch.zeros 2개
+        output, state = self.encoder(obs_traj_embedding, state_tuple)  # LSTM. (output, (h_n, c_n))
         final_h = state[0]
-        return final_h
+
+        if is_feat:
+            return final_h, output
+
+        else:
+            return final_h
 
 
 class Decoder(nn.Module):
@@ -134,12 +138,12 @@ class Decoder(nn.Module):
         """
         batch = last_pos.size(0)
         pred_traj_fake_rel = []
-        decoder_input = self.spatial_embedding(last_pos_rel)
+        decoder_input = self.spatial_embedding(last_pos_rel) # fc layer
         decoder_input = decoder_input.view(1, batch, self.embedding_dim)
 
         for _ in range(self.seq_len):
-            output, state_tuple = self.decoder(decoder_input, state_tuple)
-            rel_pos = self.hidden2pos(output.view(-1, self.h_dim))
+            output, state_tuple = self.decoder(decoder_input, state_tuple) # LSTM
+            rel_pos = self.hidden2pos(output.view(-1, self.h_dim)) # linear, rel_pos는 위치의 변화량
             curr_pos = rel_pos + last_pos
 
             if self.pool_every_timestep:
@@ -153,7 +157,7 @@ class Decoder(nn.Module):
 
             embedding_input = rel_pos
 
-            decoder_input = self.spatial_embedding(embedding_input)
+            decoder_input = self.spatial_embedding(embedding_input) # fc layer
             decoder_input = decoder_input.view(1, batch, self.embedding_dim)
             pred_traj_fake_rel.append(rel_pos.view(batch, -1))
             last_pos = curr_pos
@@ -505,27 +509,35 @@ class TrajectoryGenerator(nn.Module):
         """
         batch = obs_traj_rel.size(1)
         # Encode seq
-        final_encoder_h = self.encoder(obs_traj_rel)
+        if is_feat:
+            final_encoder_h, feat_encoder = self.encoder(obs_traj_rel, is_feat)  #  encoder module(FC 후 LSTM. agent 별로독립적으로 함)
+        else:
+            final_encoder_h = self.encoder(obs_traj_rel, is_feat)  #  encoder module(FC 후 LSTM. agent 별로독립적으로 함)
+
+
         # Pool States
         if self.pooling_type:
             end_pos = obs_traj[-1, :, :]
             pool_h = self.pool_net(final_encoder_h, seq_start_end, end_pos)
             # Construct input hidden states for decoder
-            mlp_decoder_context_input = torch.cat(
-                [final_encoder_h.view(-1, self.encoder_h_dim), pool_h], dim=1)
+            mlp_decoder_context_input = torch.cat([final_encoder_h.view(-1, self.encoder_h_dim), pool_h], dim=1)
         else:
-            mlp_decoder_context_input = final_encoder_h.view(
-                -1, self.encoder_h_dim)
+            mlp_decoder_context_input = final_encoder_h.view(-1, self.encoder_h_dim)
 
         # Add Noise
+        # final_encoder_h : encoder output
+        # mlp_decoder_context_input : final_encoder_h하고 똑같음
         if self.mlp_decoder_needed():
             noise_input = self.mlp_decoder_context(mlp_decoder_context_input)
         else:
             noise_input = mlp_decoder_context_input
+        
+        # encoder output에 noise 추가
         decoder_h = self.add_noise(
             noise_input, seq_start_end, user_noise=user_noise)
         decoder_h = torch.unsqueeze(decoder_h, 0)
 
+        # lstm의 초기값은 0으로 초기화
         decoder_c = torch.zeros(
             self.num_layers, batch, self.decoder_h_dim
         ).cuda()
@@ -535,20 +547,25 @@ class TrajectoryGenerator(nn.Module):
         last_pos_rel = obs_traj_rel[-1]
         # Predict Trajectory
 
+        # self.decoder = LSTM
         decoder_out = self.decoder(
             last_pos,
             last_pos_rel,
             state_tuple,
             seq_start_end,
         )
+
         pred_traj_fake_rel, final_decoder_h = decoder_out
         
         if is_feat:
-            return pred_traj_fake_rel, (mlp_decoder_context_input, final_decoder_h)
+            if self.pooling_type:
+                return pred_traj_fake_rel, (feat_encoder, mlp_decoder_context_input)
+            else:
+                return pred_traj_fake_rel, (feat_encoder, )
         else:
             return pred_traj_fake_rel
 
-
+    
 class TrajectoryDiscriminator(nn.Module):
     def __init__(
         self, obs_len, pred_len, embedding_dim=64, h_dim=64, mlp_dim=1024,
@@ -599,7 +616,8 @@ class TrajectoryDiscriminator(nn.Module):
         Output:
         - scores: Tensor of shape (batch,) with real/fake scores
         """
-        final_h = self.encoder(traj_rel)
+        final_h = self.encoder(traj_rel) # 독립적으로 encoding. 그냥 fc layer 하나에 LSTM
+        
         # Note: In case of 'global' option we are using start_pos as opposed to
         # end_pos. The intution being that hidden state has the whole
         # trajectory and relative postion at the start when combined with
