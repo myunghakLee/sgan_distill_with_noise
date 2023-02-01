@@ -55,6 +55,29 @@ def evaluate_helper(error, seq_start_end):
     return sum_
 
 
+def evaluate_only_generator(generator, obs_traj, pred_traj_gt, obs_traj_rel):
+    with torch.no_grad():
+        batch = [tensor.cuda() for tensor in batch]
+        (obs_traj, pred_traj_gt, obs_traj_rel, _,
+         _, _, seq_start_end) = batch
+
+        ade, fde = [], []
+        total_traj += pred_traj_gt.size(1)
+
+        for _ in range(num_samples):
+            pred_traj_fake_rel = generator(obs_traj, obs_traj_rel, seq_start_end)
+            pred_traj_fake = relative_to_abs(pred_traj_fake_rel, obs_traj[-1])
+            
+            ade.append(displacement_error(pred_traj_fake, pred_traj_gt, mode='raw'))
+            fde.append(final_displacement_error(pred_traj_fake[-1], pred_traj_gt[-1], mode='raw'))
+
+        ade_sum = evaluate_helper(ade, seq_start_end)
+        fde_sum = evaluate_helper(fde, seq_start_end)
+
+        
+        return ade_sum, fde_sum
+
+
 def evaluate(args, loader, generator, num_samples):
     ade_outer, fde_outer = [], []
     total_traj = 0
@@ -91,13 +114,15 @@ def evaluate(args, loader, generator, num_samples):
         return ade, fde
 
 
+from glob import glob
 def main(args):
     if os.path.isdir(args.model_path):
-        filenames = os.listdir(args.model_path)
-        filenames.sort()
-        paths = [
-            os.path.join(args.model_path, file_) for file_ in filenames
-        ]
+#         filenames = os.listdir(args.model_path)
+#         filenames.sort()
+#         paths = [
+#             os.path.join(args.model_path, file_) for file_ in filenames
+#         ]
+        paths = glob(args.model_path + "/*8*.pt")
     else:
         paths = [args.model_path]
 

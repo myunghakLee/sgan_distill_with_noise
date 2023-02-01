@@ -50,6 +50,11 @@ def set_seed(seed=0):
 
 
 # +
+# import torch
+# checkpoint_T = torch.load("models/sgan-p-models/eth_8_model.pt")
+# checkpoint_T['args']
+
+# +
 parser = argparse.ArgumentParser()
 FORMAT = '[%(levelname)s: %(filename)s: %(lineno)4d]: %(message)s'
 logging.basicConfig(level=logging.INFO, format=FORMAT, stream=sys.stdout)
@@ -179,6 +184,7 @@ def main(args):
     )
 
     #  Data Loader
+    print(f"load dataset : {args.dataset_name}")
     train_path = get_dset_path(args.dataset_name, 'train')
     _, train_loader = data_loader(args, train_path)
 
@@ -211,7 +217,10 @@ def main(args):
     
     t = 0
     epoch = 0
+    time_consume = time.time()
     while t < args.num_iterations:
+        print(f"{args.mode}\t{args.dataset_name} \t : {t} / {args.num_iterations}\t time_consume : {int(time.time()-time_consume)}")
+        time_consume = time.time()
         gc.collect()
         d_steps_left = args.d_steps
         g_steps_left = args.g_steps
@@ -338,8 +347,9 @@ def get_lrp(generator_T, obs_traj, obs_traj_rel, pred_traj_gt_rel, seq_start_end
     loss = torch.mean((pred - pred_traj_gt_rel) ** 2)
     loss.backward()
 
-    #  ===================================================================
-    if args.pool:
+    #  =================== Make Refined data==============================
+    # obs_traj_rel : 속도
+    if args.pool: # pooling이 있을 때만 절대 좌표계를 사용
         obs_traj_lrp = obs_traj - (obs_traj.grad * torch.abs(obs_traj) * args.alpha * args.negative)
     else:
         obs_traj_lrp = obs_traj
@@ -351,6 +361,7 @@ def get_lrp(generator_T, obs_traj, obs_traj_rel, pred_traj_gt_rel, seq_start_end
 
 def generator_step(args, batch, generator_S, generator_T, discriminator, g_loss_fn, optimizer_g):
     batch = [tensor.cuda() for tensor in batch]
+    # obs_traj_rel : 속도
     (obs_traj, pred_traj_gt, obs_traj_rel, pred_traj_gt_rel, non_linear_ped,
      loss_mask, seq_start_end) = batch
     
@@ -362,27 +373,38 @@ def generator_step(args, batch, generator_S, generator_T, discriminator, g_loss_
     
     loss_mask = loss_mask[:, args.obs_len:]
 
-    for _ in range(args.best_k):
+    
+    # Metohd 1 : ground truth하고 가장 가까운 teacher를 이용하자    -->    (ground truth만 쓰는거 이상의 효율이 나올 수 없다. or 분산이 너무 작다.)
+    # Method2 : teacher를 그냥 한번만 이용하자(teacher는 한번 student는 k번) .
+    # Method3: 분포를 똑같이하자(ex : teacher의 k개의 output의 분산과 평균이 student의 k개의 output 분산과 평균과 같아야 한다.).
+    # Method4 : 처음에 teacher 한번, 이거에 맞춰 student 20번
+            
+    for idx_k in range(args.best_k):
         generator_out_S, feat_S = generator_S(obs_traj, obs_traj_rel, seq_start_end, is_feat=True)
         
-        if args.mode == 'lrp':
-            args.negative = 1
-            obs_traj_ref, obs_traj_rel_ref = get_lrp(generator_T, obs_traj, obs_traj_rel, pred_traj_gt_rel, seq_start_end, args)
-        elif args.mode == 'negative_lrp':
-            args.negative = -1
-            obs_traj_ref, obs_traj_rel_ref = get_lrp(generator_T, obs_traj, obs_traj_rel, pred_traj_gt_rel, seq_start_end, args)
-        elif args.mode == 'random_noise':
-            obs_traj_ref = obs_traj + (torch.randn_like(obs_traj) * args.traj_std)
-            obs_traj_rel_ref = obs_traj_rel + (torch.randn_like(obs_traj_rel) * args.traj_rel_std)
-        elif args.mode == 'no_noise':
-            obs_traj_ref = obs_traj.clone()
-            obs_traj_rel_ref = obs_traj_rel.clone()
-        else:
-            assert False, "args.mode is wrong !!!!"
-#             obs_traj_ref = obs_traj + (torch.randn_like(obs_traj) * 0.0656)
-#             obs_traj_rel_ref = obs_traj_rel + (torch.randn_like(obs_traj_rel) * 0.0324)
+        with torch.no_grad
+            out2, feat2 = generator_S(refined data)  # 보정해준 output(단점: ground truth와 크게 다를게 있나?)
+        
+        loss = (generator_out_S - out2)
+        
+        # distillation
+        if idx_k == 0:
+            if args.mode == 'lrp':
+                args.negative = 1
+                obs_traj_ref, obs_traj_rel_ref = get_lrp(generator_T, obs_traj, obs_traj_rel, pred_traj_gt_rel, seq_start_end, args)
+            elif args.mode == 'negative_lrp':
+                args.negative = -1
+                obs_traj_ref, obs_traj_rel_ref = get_lrp(generator_T, obs_traj, obs_traj_rel, pred_traj_gt_rel, seq_start_end, args)
+            elif args.mode == 'random_noise':
+                obs_traj_ref = obs_traj + (torch.randn_like(obs_traj) * args.traj_std)
+                obs_traj_rel_ref = obs_traj_rel + (torch.randn_like(obs_traj_rel) * args.traj_rel_std)
+            elif args.mode == 'no_noise':
+                obs_traj_ref = obs_traj.clone()
+                obs_traj_rel_ref = obs_traj_rel.clone()
+            else:
+                assert False, "args.mode is wrong !!!!"
             
-        generator_out_T, feat_T = generator_T(obs_traj_ref, obs_traj_rel_ref, seq_start_end, is_feat=True)
+            generator_out_T, feat_T = generator_T(obs_traj_ref, obs_traj_rel_ref, seq_start_end, is_feat=True)
 #         generator_out_S2, feat_S2 = generator_S(obs_traj_ref, obs_traj_rel_ref, seq_start_end, is_feat=True)
 
         pred_traj_fake_rel_S = generator_out_S
@@ -586,4 +608,5 @@ if __name__ == '__main__':
 #     args.negative = 1
 
     args.pool = ("sgan-models" not in args.checkpoint_load_path)
+    print("is_pool : ", args.pool)
     main(args)
