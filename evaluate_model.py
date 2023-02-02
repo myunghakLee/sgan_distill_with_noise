@@ -13,6 +13,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--model_path', type=str)
 parser.add_argument('--num_samples', default=20, type=int)
 parser.add_argument('--dset_type', default='test', type=str)
+parser.add_argument('--seq_length', default=8, type=int)
 
 
 def get_generator(checkpoint):
@@ -122,11 +123,13 @@ def main(args):
 #         paths = [
 #             os.path.join(args.model_path, file_) for file_ in filenames
 #         ]
-        paths = glob(args.model_path + "/*8*.pt")
+        paths = glob(args.model_path + f"/*{args.seq_length}*.pt")
     else:
         paths = [args.model_path]
-
-    for path in paths:
+    
+    datasets = []
+    metric = []
+    for path in sorted(paths):
         checkpoint = torch.load(path)
         generator = get_generator(checkpoint)
         _args = AttrDict(checkpoint['args'])
@@ -135,6 +138,18 @@ def main(args):
         ade, fde = evaluate(_args, loader, generator, args.num_samples)
         print('Dataset: {}, Pred Len: {}, ADE: {:.2f}, FDE: {:.2f}'.format(
             _args.dataset_name, _args.pred_len, ade, fde))
+        
+        datasets.append(_args.dataset_name)
+        metric.append([round(ade.item(),4), round(fde.item(), 4)])
+        
+    print(datasets)
+    ans = ""
+    for i, d in enumerate(metric):
+        ans += f"{d[0]} / {d[1]}"
+        if i < len(metric) - 1:
+            ans += ","
+        
+    print(ans)
 
 
 if __name__ == '__main__':
